@@ -24,6 +24,7 @@ fs.mkdirSync(distRoot, { recursive: true });
 
 copyFile("package.json");
 copyFile("README.md");
+copyFile("LICENSE");
 copyFile("CHANGELOG.md");
 copyDir("src");
 

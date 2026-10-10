@@ -8,8 +8,7 @@ function scanRoots(root) {
   }
   return result;
 }
-function dedupeFiles(files) {
-  const found = new Set();
+function dedupeFiles(files, found = new Set()) {
   const result = [];
   for (const file of files) {
     const base = path.basename(file.fullPath);

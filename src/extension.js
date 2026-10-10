@@ -351,6 +351,7 @@ async function buildDashboardData(accounts, priceOptions, display) {
   const accountsData = [];
   let fileCount = 0;
   let sessionCount = 0;
+  const seenRolloutFiles = new Set();
 
   for (const account of accounts) {
     const data = await buildAccountUsage(account, {
@@ -358,7 +359,7 @@ async function buildDashboardData(accounts, priceOptions, display) {
       todayEnd,
       sevenStart,
       monthStart
-    }, priceOptions);
+    }, priceOptions, seenRolloutFiles);
     fileCount += data.files;
     sessionCount += data.sessions;
     accountsData.push(data);
@@ -376,8 +377,8 @@ async function buildDashboardData(accounts, priceOptions, display) {
   };
 }
 
-async function buildAccountUsage(account, ranges, priceOptions) {
-  const files = dedupeFiles((await Promise.all(scanRoots(account.root).filter(root => fs.existsSync(root)).map(root => findJsonlFiles(root)))).flat());
+async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles) {
+  const files = dedupeFiles((await Promise.all(scanRoots(account.root).filter(root => fs.existsSync(root)).map(root => findJsonlFiles(root)))).flat(), seenRolloutFiles);
   const candidates = files.filter((file) => file.mtimeMs >= ranges.monthStart - DAY_MS);
   const todayPoints = [];
   const todaySessionGroups = [];

@@ -148,3 +148,5 @@ npm.cmd run package
 ```
 
 只显示人民币时，可以设置 `currencySymbol: "¥"`，并将 `currencyRate` 设置为你的**实际**美元到人民币兑换比例。换算不改变底层美元计价。未知模型或混入未知模型的汇总费用显示 `N/A`，而不是虚假的 `$0.00`。更改配置将重新扫描日志并计算历史费用。可在 GitHub Actions 的成功构建中下载 VSIX artifact。
+
+旧版若已经在 `codexTokenMonitor.accounts` 中把 `sessions` 和 `archived_sessions` 配置为两个账户，新版会跨账户去重；更推荐删除归档账户配置，只保留 `sessions` 作为一个账户根目录，以免账户选择器产生无用的空项。
