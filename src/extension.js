@@ -5,11 +5,12 @@ const os = require("os");
 const path = require("path");
 const readline = require("readline");
 const vscode = require("vscode");
+const { resolvePrice, priceUsage } = require("./pricing");
+const { scanRoots, dedupeFiles } = require("./session-roots");
 
 const EXTENSION_ID = "codexTokenMonitor";
 const TOKEN_EVENT = '"type":"token_count"';
 const DAY_MS = 24 * 60 * 60 * 1000;
-const FAST_MODE_MULTIPLIER = 2.5;
 const PRICE_TABLE = {
   "gpt-5.5": { input: 5, cached: 0.5, output: 30 },
   "gpt-5-codex": { input: 1.25, cached: 0.125, output: 10 },
@@ -20,6 +21,7 @@ const PRICE_TABLE = {
 };
 
 let monitor;
+let currencyDisplay = { symbol: "$", rate: 1 };
 
 function activate(context) {
   monitor = new CodexTokenMonitor(context);
@@ -72,7 +74,11 @@ class CodexTokenMonitor {
         if (
           event.affectsConfiguration(`${EXTENSION_ID}.sessionsRoot`) ||
           event.affectsConfiguration(`${EXTENSION_ID}.accounts`) ||
-          event.affectsConfiguration(`${EXTENSION_ID}.refreshIntervalMs`)
+          event.affectsConfiguration(`${EXTENSION_ID}.refreshIntervalMs`) ||
+          event.affectsConfiguration(`${EXTENSION_ID}.modelPrices`) ||
+          event.affectsConfiguration(`${EXTENSION_ID}.priceMultiplier`) ||
+          event.affectsConfiguration(`${EXTENSION_ID}.currencySymbol`) ||
+          event.affectsConfiguration(`${EXTENSION_ID}.currencyRate`)
         ) {
           this.configureWatchers();
           this.refresh(true);
@@ -99,7 +105,7 @@ class CodexTokenMonitor {
 
   get sessionsRoot() {
     const configured = this.config.get("sessionsRoot", "").trim();
-    return configured || path.join(os.homedir(), ".codex", "sessions");
+    return configured || path.join(process.env.CODEX_HOME || path.join(os.homedir(), ".codex"), "sessions");
   }
 
   get refreshIntervalMs() {
@@ -131,17 +137,15 @@ class CodexTokenMonitor {
     this.clearWatchers();
 
     for (const account of this.accounts) {
-      if (!fs.existsSync(account.root)) {
-        continue;
-      }
-      try {
-        const watcher = fs.watch(account.root, { recursive: true }, () => this.scheduleRefresh());
-        if (!this.watcher) {
-          this.watcher = [];
+      for (const root of scanRoots(account.root)) {
+        if (!fs.existsSync(root)) continue;
+        try {
+          const watcher = fs.watch(root, { recursive: true }, () => this.scheduleRefresh());
+          if (!this.watcher) this.watcher = [];
+          this.watcher.push(watcher);
+        } catch (error) {
+          this.lastError = readableError(error);
         }
-        this.watcher.push(watcher);
-      } catch (error) {
-        this.lastError = readableError(error);
       }
     }
 
@@ -176,7 +180,15 @@ class CodexTokenMonitor {
 
     this.refreshing = true;
     try {
-      const dashboardData = await buildDashboardData(this.accounts);
+      const priceOptions = {
+        modelPrices: this.config.get("modelPrices", {}),
+        priceMultiplier: this.config.get("priceMultiplier", 1)
+      };
+      currencyDisplay = {
+        symbol: this.config.get("currencySymbol", "$"),
+        rate: this.config.get("currencyRate", 1)
+      };
+      const dashboardData = await buildDashboardData(this.accounts, priceOptions, currencyDisplay);
       const latest = findLatestAccountUsage(dashboardData.accounts);
 
       this.dashboardData = dashboardData;
@@ -222,8 +234,9 @@ class CodexTokenMonitor {
     const total = numberOrZero(usage.total_tokens);
     const cachePercent = percentOf(cached, input);
     const cost = numberOrZero(this.latestUsage.cost);
+    const missing = numberOrZero(this.latestUsage.unpriced);
 
-    this.status.text = `$(pulse) ${time} +${formatCount(total)}(in ${formatCount(input)}, cache ${formatCount(cached)}${formatPercent(cachePercent)})  ${formatMoney(cost)}`;
+    this.status.text = `$(pulse) ${time} +${formatCount(total)}(in ${formatCount(input)}, cache ${formatCount(cached)}${formatPercent(cachePercent)})  ${formatMoney(cost, missing)}`;
     this.status.tooltip = this.buildTooltip();
   }
 
@@ -245,7 +258,7 @@ class CodexTokenMonitor {
     markdown.appendMarkdown(`| Session total | **${formatCount(numberOrZero(usage.total_tokens))}** · ${escapeMarkdown(modelSummary)} |\n`);
     markdown.appendMarkdown(`| Input | ${formatCount(input)} · Cache hit **${formatCount(cached)} / ${formatPercent(percentOf(cached, input))}** |\n`);
     markdown.appendMarkdown(`| Output | ${formatCount(numberOrZero(usage.output_tokens))} · Reasoning ${formatCount(numberOrZero(usage.reasoning_output_tokens))} |\n\n`);
-    markdown.appendMarkdown(`**Session cost:** ${formatMoney(this.latestUsage.cost)}\n\n`);
+    markdown.appendMarkdown(`**Session cost:** ${formatMoney(this.latestUsage.cost, this.latestUsage.unpriced)}\n\n`);
     // markdown.appendMarkdown("```text\n" + buildCostCalculation(this.latestUsage.modelBreakdown) + "\n```\n");
     if (this.lastError) {
       markdown.appendMarkdown(`\nLast watcher error: ${escapeMarkdown(this.lastError)}\n`);
@@ -329,7 +342,7 @@ class CodexTokenMonitor {
   }
 }
 
-async function buildDashboardData(accounts) {
+async function buildDashboardData(accounts, priceOptions, display) {
   const now = new Date();
   const todayStart = startOfLocalDay(now);
   const sevenStart = startOfLocalDay(addDays(now, -6));
@@ -345,7 +358,7 @@ async function buildDashboardData(accounts) {
       todayEnd,
       sevenStart,
       monthStart
-    });
+    }, priceOptions);
     fileCount += data.files;
     sessionCount += data.sessions;
     accountsData.push(data);
@@ -355,6 +368,7 @@ async function buildDashboardData(accounts) {
 
   return {
     generatedAt: new Date().toISOString(),
+    display,
     files: fileCount,
     sessions: sessionCount,
     totals,
@@ -362,10 +376,8 @@ async function buildDashboardData(accounts) {
   };
 }
 
-async function buildAccountUsage(account, ranges) {
-  const files = fs.existsSync(account.root)
-    ? await findJsonlFiles(account.root)
-    : [];
+async function buildAccountUsage(account, ranges, priceOptions) {
+  const files = dedupeFiles((await Promise.all(scanRoots(account.root).filter(root => fs.existsSync(root)).map(root => findJsonlFiles(root)))).flat());
   const candidates = files.filter((file) => file.mtimeMs >= ranges.monthStart - DAY_MS);
   const todayPoints = [];
   const todaySessionGroups = [];
@@ -378,7 +390,7 @@ async function buildAccountUsage(account, ranges) {
   let todayTotal = emptyUsage();
 
   for (const file of candidates) {
-    const stats = await readSessionStats(file.fullPath, ranges.monthStart);
+    const stats = await readSessionStats(file.fullPath, ranges.monthStart, priceOptions);
     if (stats.events.length === 0) {
       continue;
     }
@@ -417,6 +429,7 @@ async function buildAccountUsage(account, ranges) {
           cached: event.delta.cached_input_tokens,
           reasoning: event.delta.reasoning_output_tokens,
           cost: event.delta.cost_usd,
+          unpriced: event.delta.unpriced_events,
           costCalculation: event.costCalculation,
           model: event.model,
           reasoningEffort: event.reasoningEffort,
@@ -520,6 +533,7 @@ function getSessionGroup(map, id, account, file, event) {
       cached: 0,
       reasoning: 0,
       cost: 0,
+      unpriced: 0,
       eventCount: 0,
       eventIds: [],
       modelUsage: {},
@@ -538,6 +552,7 @@ function addEventToSessionGroup(group, event) {
   group.cached += event.delta.cached_input_tokens;
   group.reasoning += event.delta.reasoning_output_tokens;
   group.cost += event.delta.cost_usd;
+  group.unpriced += event.delta.unpriced_events || 0;
   group.eventCount += 1;
   group.eventIds.push(event.index);
   addModelUsage(group.modelUsage, event);
@@ -547,7 +562,7 @@ function addEventToSessionGroup(group, event) {
   }
 }
 
-async function readSessionStats(file, minTimestamp) {
+async function readSessionStats(file, minTimestamp, priceOptions) {
   let previous = emptyUsage();
   let total = emptyUsage();
   let firstTimestamp = undefined;
@@ -598,8 +613,9 @@ async function readSessionStats(file, minTimestamp) {
       const model = event.model || currentModel;
       const reasoningEffort = event.reasoningEffort || currentReasoningEffort;
       const serviceTier = event.serviceTier || currentServiceTier;
-      const cost = calculateUsageCost(delta, model, serviceTier);
+      const cost = calculateUsageCost(delta, model, serviceTier, priceOptions);
       delta.cost_usd = cost.total;
+      delta.unpriced_events = cost.known ? 0 : 1;
       previous = current;
 
       if (!hasUsage(delta)) {
@@ -873,7 +889,8 @@ function summarizeAccounts(accounts, todayStart, sevenStart, monthStart) {
         output_tokens: day.output,
         cached_input_tokens: day.cached,
         reasoning_output_tokens: day.reasoning,
-        cost_usd: day.cost
+        cost_usd: day.cost,
+        unpriced_events: day.unpriced
       });
     }
   }
@@ -927,7 +944,8 @@ function buildDaySeries(startMs, count, dailyMap) {
       output: usage.output_tokens,
       cached: usage.cached_input_tokens,
       reasoning: usage.reasoning_output_tokens,
-      cost: usage.cost_usd
+      cost: usage.cost_usd,
+      unpriced: usage.unpriced_events
     };
   });
 }
@@ -973,7 +991,8 @@ function emptyUsage() {
     output_tokens: 0,
     reasoning_output_tokens: 0,
     total_tokens: 0,
-    cost_usd: 0
+    cost_usd: 0,
+    unpriced_events: 0
   };
 }
 
@@ -1010,7 +1029,8 @@ function addUsage(left, right) {
     output_tokens: left.output_tokens + right.output_tokens,
     reasoning_output_tokens: left.reasoning_output_tokens + right.reasoning_output_tokens,
     total_tokens: left.total_tokens + right.total_tokens,
-    cost_usd: numberOrZero(left.cost_usd) + numberOrZero(right.cost_usd)
+    cost_usd: numberOrZero(left.cost_usd) + numberOrZero(right.cost_usd),
+    unpriced_events: numberOrZero(left.unpriced_events) + numberOrZero(right.unpriced_events)
   };
 }
 
@@ -1033,7 +1053,8 @@ function sessionGroupToUsage(group) {
     output_tokens: numberOrZero(group && group.output),
     reasoning_output_tokens: numberOrZero(group && group.reasoning),
     total_tokens: numberOrZero(group && group.total),
-    cost_usd: numberOrZero(group && group.cost)
+    cost_usd: numberOrZero(group && group.cost),
+    unpriced_events: numberOrZero(group && group.unpriced)
   };
 }
 
@@ -1053,6 +1074,7 @@ function addModelUsage(modelUsage, event) {
       reasoning: 0,
       total: 0,
       cost: 0,
+      unpriced: 0,
       calculations: []
     };
   }
@@ -1063,6 +1085,7 @@ function addModelUsage(modelUsage, event) {
   item.reasoning += event.delta.reasoning_output_tokens;
   item.total += event.delta.total_tokens;
   item.cost += event.delta.cost_usd;
+  item.unpriced += event.delta.unpriced_events || 0;
   if (event.costCalculation && !item.calculations.includes(event.costCalculation)) {
     item.calculations.push(event.costCalculation);
   }
@@ -1078,44 +1101,12 @@ function modelUsageToBreakdown(modelUsage) {
     }));
 }
 
-function calculateUsageCost(usage, model, serviceTier) {
-  const modelKey = priceModelKey(model);
-  const pricing = modelKey ? PRICE_TABLE[modelKey] : undefined;
-  if (!pricing) {
-    return {
-      total: 0,
-      calculation: `${model || "unknown"}: price unavailable`
-    };
-  }
-
-  const input = numberOrZero(usage.input_tokens);
-  const cached = numberOrZero(usage.cached_input_tokens);
-  const uncached = Math.max(input - cached, 0);
-  const output = numberOrZero(usage.output_tokens);
-  const multiplier = isFastMode(serviceTier) ? FAST_MODE_MULTIPLIER : 1;
-  const inputCost = uncached * pricing.input / 1000000 * multiplier;
-  const cachedCost = cached * pricing.cached / 1000000 * multiplier;
-  const outputCost = output * pricing.output / 1000000 * multiplier;
-  const total = inputCost + cachedCost + outputCost;
-  const mode = normalizeServiceTier(serviceTier) || "standard";
-  const suffix = multiplier === 1 ? "" : ` x ${multiplier}`;
-
-  return {
-    total,
-    calculation: `${modelKey} / ${mode}: uncached ${formatCount(uncached)} * $${pricing.input}/1M${suffix} = ${formatMoney(inputCost)}; cached ${formatCount(cached)} * $${pricing.cached}/1M${suffix} = ${formatMoney(cachedCost)}; output ${formatCount(output)} * $${pricing.output}/1M${suffix} = ${formatMoney(outputCost)}; total ${formatMoney(total)}`
-  };
-}
-
-function priceModelKey(model) {
-  const normalized = normalizeModelName(model);
-  if (!normalized) {
-    return undefined;
-  }
-  const direct = PRICE_TABLE[normalized] ? normalized : undefined;
-  if (direct) {
-    return direct;
-  }
-  return Object.keys(PRICE_TABLE).find((key) => normalized.startsWith(key));
+function calculateUsageCost(usage, model, serviceTier, options = {}) {
+  const result = priceUsage(usage, model, serviceTier, PRICE_TABLE, options);
+  const description = result.known
+    ? `${result.modelKey} / ${serviceTier || "standard"}: ${result.detail}; USD ${result.total.toFixed(6)}`
+    : `${model || "unknown"}: price unavailable; configure codexTokenMonitor.modelPrices`;
+  return { total: result.total, known: result.known, calculation: description };
 }
 
 function normalizeModelName(value) {
@@ -1155,15 +1146,12 @@ function formatPercent(value) {
   return `${trimFixed(numberOrZero(value))}%`;
 }
 
-function formatMoney(value) {
-  const amount = numberOrZero(value);
-  if (amount === 0) {
-    return "$0.00";
-  }
-  if (amount < 0.01) {
-    return `$${amount.toFixed(4)}`;
-  }
-  return `$${amount.toFixed(2)}`;
+function formatMoney(value, unpriced = 0) {
+  if (unpriced > 0) return "N/A";
+  const rate = Number(currencyDisplay.rate);
+  const amount = numberOrZero(value) * (Number.isFinite(rate) && rate > 0 ? rate : 1);
+  const symbol = String(currencyDisplay.symbol || "$");
+  return symbol + amount.toFixed(amount > 0 && amount < 0.01 ? 4 : 2);
 }
 
 function summarizeModelBreakdown(breakdown) {
@@ -1480,10 +1468,10 @@ function getDashboardHtml() {
       const seven = data.totals.seven || {};
       const month = data.totals.month || {};
       document.getElementById("summary").innerHTML = [
-        metric("Today", today.total_tokens, money(today.cost_usd) + " · input " + fmt(today.input_tokens) + " / output " + fmt(today.output_tokens)),
+        metric("Today", today.total_tokens, money(today.cost_usd, today.unpriced_events) + " · input " + fmt(today.input_tokens) + " / output " + fmt(today.output_tokens)),
         metric("Cache", today.cached_input_tokens, fmt(today.cached_input_tokens) + " / " + pct(today.cached_input_tokens, today.input_tokens)),
-        metric("7 Days", seven.total_tokens, money(seven.cost_usd) + " · cached " + fmt(seven.cached_input_tokens)),
-        metric("30 Days", month.total_tokens, money(month.cost_usd) + " · reasoning " + fmt(month.reasoning_output_tokens)),
+        metric("7 Days", seven.total_tokens, money(seven.cost_usd, seven.unpriced_events) + " · cached " + fmt(seven.cached_input_tokens)),
+        metric("30 Days", month.total_tokens, money(month.cost_usd, month.unpriced_events) + " · reasoning " + fmt(month.reasoning_output_tokens)),
         metric("Sessions", data.sessions, data.files + " files scanned")
       ].join("");
     }
@@ -1500,7 +1488,7 @@ function getDashboardHtml() {
         return;
       }
       host.innerHTML = '<table><thead><tr><th>Model</th><th>Reasoning</th><th>Mode</th><th>Input</th><th>Cache</th><th>Output</th><th>Total</th><th>Cost</th></tr></thead><tbody>' +
-        models.map((item) => '<tr title="' + escapeHtml(item.calculation || "") + '"><td>' + escapeHtml(item.model) + '</td><td>' + escapeHtml(item.reasoningEffort || "unknown") + '</td><td>' + escapeHtml(item.serviceTier || "standard") + '</td><td>' + fmt(item.input) + '</td><td>' + fmt(item.cached) + ' / ' + pct(item.cached, item.input) + '</td><td>' + fmt(item.output) + '</td><td>' + fmt(item.total) + '</td><td class="money">' + money(item.cost) + '</td></tr>').join("") +
+        models.map((item) => '<tr title="' + escapeHtml(item.calculation || "") + '"><td>' + escapeHtml(item.model) + '</td><td>' + escapeHtml(item.reasoningEffort || "unknown") + '</td><td>' + escapeHtml(item.serviceTier || "standard") + '</td><td>' + fmt(item.input) + '</td><td>' + fmt(item.cached) + ' / ' + pct(item.cached, item.input) + '</td><td>' + fmt(item.output) + '</td><td>' + fmt(item.total) + '</td><td class="money">' + money(item.cost, item.unpriced) + '</td></tr>').join("") +
         '</tbody></table>';
     }
 
@@ -1545,7 +1533,7 @@ function getDashboardHtml() {
         '<line class="axis" x1="' + pad + '" y1="' + (height - pad) + '" x2="' + (width - pad) + '" y2="' + (height - pad) + '"></line>' +
         segments +
         sessionRings.map((ring) => '<circle class="session-ring" data-session-id="' + escapeHtml(ring.id) + '" cx="' + ring.x.toFixed(1) + '" cy="' + ring.y.toFixed(1) + '" r="' + ring.r.toFixed(1) + '" stroke="' + ring.color + '"><title>' + escapeHtml(ring.title) + '</title></circle>').join("") +
-        coords.map((item) => '<circle class="point" data-event-id="' + escapeHtml(item.point.id) + '" cx="' + item.x.toFixed(1) + '" cy="' + item.y.toFixed(1) + '" r="' + pointRadius(item.point.total, maxValue) + '" fill="' + tokenColor(item.point.total, maxValue) + '"><title>' + escapeHtml(item.point.time + " +" + fmt(item.point.total) + " cache " + fmt(item.point.cached) + " / " + pct(item.point.cached, item.point.input) + " " + money(item.point.cost) + " " + item.point.snippet) + '</title></circle>').join("") +
+        coords.map((item) => '<circle class="point" data-event-id="' + escapeHtml(item.point.id) + '" cx="' + item.x.toFixed(1) + '" cy="' + item.y.toFixed(1) + '" r="' + pointRadius(item.point.total, maxValue) + '" fill="' + tokenColor(item.point.total, maxValue) + '"><title>' + escapeHtml(item.point.time + " +" + fmt(item.point.total) + " cache " + fmt(item.point.cached) + " / " + pct(item.point.cached, item.point.input) + " " + money(item.point.cost, item.point.unpriced) + " " + item.point.snippet) + '</title></circle>').join("") +
         ticks +
         '<text class="tick" x="' + pad + '" y="14">max ' + fmt(maxValue) + '</text>' +
         '</svg>';
@@ -1610,7 +1598,7 @@ function getDashboardHtml() {
           const yTotal = height - pad - totalHeight;
           const yInput = height - pad - inputHeight;
           const yOutput = yInput - outputHeight;
-          const title = escapeHtml(day.label + " " + fmt(day.total) + " tokens · " + money(day.cost));
+          const title = escapeHtml(day.label + " " + fmt(day.total) + " tokens · " + money(day.cost, day.unpriced));
           const attrs = ' data-bar-title="' + title + '"';
           if (stacked) {
             return '<g class="bar-group"' + attrs + '><rect class="bar" x="' + x + '" y="' + yInput + '" width="' + barWidth + '" height="' + Math.max(inputHeight, 1) + '"></rect>' +
@@ -1638,7 +1626,7 @@ function getDashboardHtml() {
       }
       const max = Math.max(...sessions.map((session) => session.total), 1);
       host.innerHTML = '<table><thead><tr><th>Cost</th><th>Time</th><th>Input</th><th>Cache</th><th>Output</th><th>Total</th><th>Dialog</th></tr></thead><tbody>' +
-        sessions.map((session) => '<tr data-session-row="' + escapeHtml(session.id) + '" style="background:' + rowColor(session.total, max) + '"><td class="money" title="' + escapeHtml(costTitle(session.modelBreakdown)) + '">' + money(session.cost) + '</td><td>' + escapeHtml(shortDate(session.lastAt)) + '</td><td>' + fmt(session.input) + '</td><td>' + fmt(session.cached) + ' / ' + pct(session.cached, session.input) + '</td><td>' + fmt(session.output) + '</td><td>' + fmt(session.total) + '</td><td class="dialog" title="' + escapeHtml(session.file) + '">' + escapeHtml((session.account ? session.account + " / " : "") + session.snippet) + '</td></tr>').join("") +
+        sessions.map((session) => '<tr data-session-row="' + escapeHtml(session.id) + '" style="background:' + rowColor(session.total, max) + '"><td class="money" title="' + escapeHtml(costTitle(session.modelBreakdown)) + '">' + money(session.cost, session.unpriced) + '</td><td>' + escapeHtml(shortDate(session.lastAt)) + '</td><td>' + fmt(session.input) + '</td><td>' + fmt(session.cached) + ' / ' + pct(session.cached, session.input) + '</td><td>' + fmt(session.output) + '</td><td>' + fmt(session.total) + '</td><td class="dialog" title="' + escapeHtml(session.file) + '">' + escapeHtml((session.account ? session.account + " / " : "") + session.snippet) + '</td></tr>').join("") +
         '</tbody></table>';
       wireSessionRowHover(host);
     }
@@ -1652,7 +1640,7 @@ function getDashboardHtml() {
       }
       const max = Math.max(...recent.map((point) => point.total), 1);
       host.innerHTML = '<table><thead><tr><th>Cost</th><th>Time</th><th>Input</th><th>Cache</th><th>Output</th><th>Total</th><th>Session</th></tr></thead><tbody>' +
-        recent.map((point) => '<tr data-event-row="' + escapeHtml(point.id) + '" style="background:' + rowColor(point.total, max) + '"><td class="money" title="' + escapeHtml(point.costCalculation || "") + '">' + money(point.cost) + '</td><td>' + escapeHtml(point.time) + '</td><td>' + fmt(point.input) + '</td><td>' + fmt(point.cached) + ' / ' + pct(point.cached, point.input) + '</td><td>' + fmt(point.output) + '</td><td>' + fmt(point.total) + '</td><td class="dialog" title="' + escapeHtml(point.session) + '">' + escapeHtml(point.snippet) + '</td></tr>').join("") +
+        recent.map((point) => '<tr data-event-row="' + escapeHtml(point.id) + '" style="background:' + rowColor(point.total, max) + '"><td class="money" title="' + escapeHtml(point.costCalculation || "") + '">' + money(point.cost, point.unpriced) + '</td><td>' + escapeHtml(point.time) + '</td><td>' + fmt(point.input) + '</td><td>' + fmt(point.cached) + ' / ' + pct(point.cached, point.input) + '</td><td>' + fmt(point.output) + '</td><td>' + fmt(point.total) + '</td><td class="dialog" title="' + escapeHtml(point.session) + '">' + escapeHtml(point.snippet) + '</td></tr>').join("") +
         '</tbody></table>';
       wireEventRowHover(host);
     }
@@ -1851,11 +1839,13 @@ function getDashboardHtml() {
       return total > 0 ? trim(((Number(part) || 0) / total) * 100) + "%" : "0%";
     }
 
-    function money(value) {
-      const amount = Number(value) || 0;
-      if (amount === 0) return "$0.00";
-      if (amount < 0.01) return "$" + amount.toFixed(4);
-      return "$" + amount.toFixed(2);
+    function money(value, unpriced) {
+      if (Number(unpriced) > 0) return "N/A";
+      const display = state.data && state.data.display || {};
+      const rate = Number(display.rate);
+      const amount = (Number(value) || 0) * (Number.isFinite(rate) && rate > 0 ? rate : 1);
+      const symbol = String(display.symbol || "$");
+      return symbol + amount.toFixed(amount > 0 && amount < 0.01 ? 4 : 2);
     }
 
     function costTitle(breakdown) {

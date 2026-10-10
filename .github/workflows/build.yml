@@ -1,0 +1,28 @@
+name: Validate and package extension
+on:
+  push:
+    branches: [main, "feat/**"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Static checks
+        run: npm run check
+      - name: Unit tests
+        run: npm test
+      - name: Build VSIX
+        run: npm run package
+      - name: Publish VSIX workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: codex-token-usage-vsix
+          path: dist/*.vsix
+          if-no-files-found: error
