@@ -28,4 +28,7 @@ test("archive scanning combines siblings and removes duplicate rollout files",()
   assert.deepEqual(scanRoots(root),[root,path.join("E:","codexzh","archived_sessions")]);
   const files=[{fullPath:path.join(root,"rollout-a.jsonl"),mtimeMs:1},{fullPath:path.join("E:","codexzh","archived_sessions","rollout-a.jsonl"),mtimeMs:2},{fullPath:path.join("E:","codexzh","archived_sessions","rollout-b.jsonl"),mtimeMs:3}];
   assert.deepEqual(dedupeFiles(files).map(x=>path.basename(x.fullPath)),["rollout-b.jsonl","rollout-a.jsonl"]);
+  const shared = new Set();
+  assert.equal(dedupeFiles([files[0]], shared).length, 1);
+  assert.equal(dedupeFiles([files[1]], shared).length, 0);
 });
