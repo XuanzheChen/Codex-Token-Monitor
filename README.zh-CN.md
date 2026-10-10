@@ -123,3 +123,28 @@ npm.cmd run package
 ## 许可证
 
 本项目采用 [MIT License](./LICENSE)。
+
+
+## 自维护版本 v0.4.0
+
+本 Fork 使用独立扩展 ID `XuanzheChen.codex-token-usage`，保留 `codexTokenMonitor.*` 配置键，便于从旧版迁移。安装前请禁用或卸载原版以免出现两个状态栏。
+
+自动汇总 `<CODEX_HOME>/sessions` 和同级的 `archived_sessions`；默认优先读取 VS Code 进程的 `CODEX_HOME` 环境变量，没有则使用 `~/.codex`。同名 rollout 日志去重，归档不再使历史统计消失。多账户配置 `codexTokenMonitor.accounts` 仍可用。
+
+自定义价格示例（单价为美元 / 100 万 Token）：
+
+```json
+{
+  "codexTokenMonitor.sessionsRoot": "E:/codexzh/sessions",
+  "codexTokenMonitor.modelPrices": {
+    "gpt-6-sol": {"input": 2, "cached": 0.2, "output": 10},
+    "gpt-6.1-sol": {"input": 2, "cached": 0.1, "output": 10},
+    "gpt-6-astra": {"input": 10, "cached": 1, "output": 50}
+  },
+  "codexTokenMonitor.priceMultiplier": 1.25,
+  "codexTokenMonitor.currencySymbol": "$",
+  "codexTokenMonitor.currencyRate": 1
+}
+```
+
+只显示人民币时，可以设置 `currencySymbol: "¥"`，并将 `currencyRate` 设置为你的**实际**美元到人民币兑换比例。换算不改变底层美元计价。未知模型或混入未知模型的汇总费用显示 `N/A`，而不是虚假的 `$0.00`。更改配置将重新扫描日志并计算历史费用。可在 GitHub Actions 的成功构建中下载 VSIX artifact。

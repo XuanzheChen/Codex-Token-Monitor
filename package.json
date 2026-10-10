@@ -1,18 +1,18 @@
 {
-  "name": "codex-token-monitor2",
-  "displayName": "Codex Token Monitor2",
+  "name": "codex-token-usage",
+  "displayName": "Codex Token Usage",
   "description": "Realtime Codex token usage and cost monitor for the VS Code status bar.",
-  "version": "0.3.0",
-  "publisher": "gouwengone",
+  "version": "0.4.0",
+  "publisher": "XuanzheChen",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/gouwengone/codex-token-monitor.git"
+    "url": "https://github.com/XuanzheChen/Codex-Token-Monitor.git"
   },
   "bugs": {
-    "url": "https://github.com/gouwengone/codex-token-monitor/issues"
+    "url": "https://github.com/XuanzheChen/Codex-Token-Monitor/issues"
   },
-  "homepage": "https://github.com/gouwengone/codex-token-monitor#readme",
+  "homepage": "https://github.com/XuanzheChen/Codex-Token-Monitor",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -52,7 +52,7 @@
         "codexTokenMonitor.sessionsRoot": {
           "type": "string",
           "default": "",
-          "description": "Codex sessions folder. Leave empty to use the default ~/.codex/sessions path."
+          "description": "Codex sessions folder. Empty follows CODEX_HOME/sessions or ~/.codex/sessions. Archived siblings are included automatically."
         },
         "codexTokenMonitor.accounts": {
           "type": "array",
@@ -81,12 +81,57 @@
           "default": 1000,
           "minimum": 250,
           "description": "Fallback polling interval in milliseconds. File watching is also used when available."
+        },
+        "codexTokenMonitor.modelPrices": {
+          "type": "object",
+          "default": {},
+          "description": "Optional model prices in USD per 1M tokens; keys are model IDs and values have input/cached/output numeric fields. Override built-in prices or add models.",
+          "additionalProperties": {
+            "type": "object",
+            "properties": {
+              "input": {
+                "type": "number",
+                "minimum": 0
+              },
+              "cached": {
+                "type": "number",
+                "minimum": 0
+              },
+              "output": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "required": [
+              "input",
+              "cached",
+              "output"
+            ]
+          }
+        },
+        "codexTokenMonitor.priceMultiplier": {
+          "type": "number",
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "description": "Additional charge multiplier, e.g. 1.25 for a 25% markup. Applied after model and fast-tier pricing."
+        },
+        "codexTokenMonitor.currencySymbol": {
+          "type": "string",
+          "default": "$",
+          "description": "Display currency symbol (e.g. $ or ¥). Does not convert by itself."
+        },
+        "codexTokenMonitor.currencyRate": {
+          "type": "number",
+          "default": 1,
+          "exclusiveMinimum": 0,
+          "description": "Display currency units per USD. E.g. 7.1 for CNY; use the provider's actual conversion rate."
         }
       }
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check scripts/package-vsix.js",
-    "package": "node scripts/package-vsix.js"
+    "check": "node --check src/extension.js && node --check src/pricing.js && node --check src/session-roots.js && node --check scripts/package-vsix.js",
+    "package": "node scripts/package-vsix.js",
+    "test": "node --test tests/*.test.js"
   }
 }
