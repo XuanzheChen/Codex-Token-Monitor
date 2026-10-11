@@ -32,3 +32,18 @@ test("archive scanning combines siblings and removes duplicate rollout files",()
   assert.equal(dedupeFiles([files[0]], shared).length, 1);
   assert.equal(dedupeFiles([files[1]], shared).length, 0);
 });
+
+test("input/output cost split retains markup and totals", () => {
+  const r = priceUsage({ input_tokens: 1000000, cached_input_tokens: 900000, output_tokens: 20000 },
+    "gpt-6-sol", "standard", {}, { modelPrices: {"gpt-6-sol":{input:2,cached:.2,output:10}}, priceMultiplier:1.25 });
+  assert.ok(Math.abs(r.inputCost - .475) < 1e-10);
+  assert.ok(Math.abs(r.outputCost - .25) < 1e-10);
+  assert.ok(Math.abs(r.total - r.inputCost - r.outputCost) < 1e-10);
+});
+
+test("same JSONL rollout has one session, while prompts have separate turn IDs", () => {
+  const { sessionGroupId, turnGroupId } = require("../src/grouping");
+  assert.equal(sessionGroupId("a","file1"),sessionGroupId("a","file1"));
+  assert.notEqual(sessionGroupId("a","file1"),sessionGroupId("a","file2"));
+  assert.notEqual(turnGroupId("a","file1",1),turnGroupId("a","file1",2));
+});

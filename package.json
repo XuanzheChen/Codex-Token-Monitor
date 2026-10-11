@@ -2,7 +2,7 @@
   "name": "codex-token-usage",
   "displayName": "Codex Token Usage",
   "description": "Realtime Codex token usage and cost monitor for the VS Code status bar.",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "publisher": "XuanzheChen",
   "license": "MIT",
   "repository": {
@@ -130,7 +130,7 @@
     }
   },
   "scripts": {
-    "check": "node --check src/extension.js && node --check src/pricing.js && node --check src/session-roots.js && node --check scripts/package-vsix.js",
+    "check": "node --check src/extension.js && node --check src/pricing.js && node --check src/grouping.js && node --check src/session-roots.js && node --check scripts/package-vsix.js",
     "package": "node scripts/package-vsix.js",
     "test": "node --test tests/*.test.js"
   }
