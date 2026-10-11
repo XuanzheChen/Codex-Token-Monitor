@@ -1,7 +1,7 @@
 name: Validate and package extension
 on:
   push:
-    branches: [main, "feat/**"]
+    branches: [main, "feat/**", "fix/**"]
   pull_request:
     branches: [main]
   workflow_dispatch:
