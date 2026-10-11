@@ -7,6 +7,7 @@ const readline = require("readline");
 const vscode = require("vscode");
 const { resolvePrice, priceUsage } = require("./pricing");
 const { scanRoots, dedupeFiles } = require("./session-roots");
+const { sessionGroupId, turnGroupId } = require("./grouping");
 
 const EXTENSION_ID = "codexTokenMonitor";
 const TOKEN_EVENT = '"type":"token_count"';
@@ -384,6 +385,7 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
   const todaySessionGroups = [];
   const dailyMap = new Map();
   const sessionMap = new Map();
+  const turnMap = new Map();
   const todaySessionMap = new Map();
   let latestDelta = undefined;
   let monthTotal = emptyUsage();
@@ -403,9 +405,12 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
       }
 
       const fileId = stableAccountId(file.fullPath);
-      const groupId = `session-${account.id}-${fileId}-${event.groupIndex}`;
+      const groupId = sessionGroupId(account.id, fileId);
+      const turnId = turnGroupId(account.id, fileId, event.groupIndex);
       const group = getSessionGroup(sessionMap, groupId, account, file, event);
       addEventToSessionGroup(group, event);
+      const turnGroup = getSessionGroup(turnMap, turnId, account, file, event);
+      addEventToSessionGroup(turnGroup, event);
 
       monthTotal = addUsage(monthTotal, event.delta);
       addUsageToMap(dailyMap, localDateKey(event.timestamp), event.delta);
@@ -415,13 +420,13 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
       }
       if (time >= ranges.todayStart && time < ranges.todayEnd) {
         const eventId = `event-${account.id}-${fileId}-${event.index}`;
-        const todayGroup = getSessionGroup(todaySessionMap, groupId, account, file, event);
+        const todayGroup = getSessionGroup(todaySessionMap, turnId, account, file, event);
         addEventToSessionGroup(todayGroup, event);
 
         todayTotal = addUsage(todayTotal, event.delta);
         todayPoints.push({
           id: eventId,
-          sessionId: groupId,
+          sessionId: turnId,
           timestamp: event.timestamp,
           time: formatLocalTime(event.timestamp),
           total: event.delta.total_tokens,
@@ -430,6 +435,8 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
           cached: event.delta.cached_input_tokens,
           reasoning: event.delta.reasoning_output_tokens,
           cost: event.delta.cost_usd,
+          inputCost: event.delta.input_cost_usd,
+          outputCost: event.delta.output_cost_usd,
           unpriced: event.delta.unpriced_events,
           costCalculation: event.costCalculation,
           model: event.model,
@@ -455,6 +462,7 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
   todayPoints.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   const sessions = Array.from(sessionMap.values()).sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime());
   const latestSessionGroup = sessions[0];
+  const latestTurnGroup = Array.from(turnMap.values()).sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime())[0];
   for (const group of todaySessionMap.values()) {
     if (group.eventCount > 0) {
       todaySessionGroups.push(group);
@@ -479,6 +487,7 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
     monthDays: buildDaySeries(ranges.monthStart, 30, dailyMap),
     recentSessions: sessions.slice(0, 20),
     latestSessionGroup,
+    latestTurnGroup,
     latestDelta
   };
 }
@@ -534,8 +543,11 @@ function getSessionGroup(map, id, account, file, event) {
       cached: 0,
       reasoning: 0,
       cost: 0,
+      inputCost: 0,
+      outputCost: 0,
       unpriced: 0,
       eventCount: 0,
+      turnCount: 0,
       eventIds: [],
       modelUsage: {},
       modelBreakdown: [],
@@ -553,8 +565,11 @@ function addEventToSessionGroup(group, event) {
   group.cached += event.delta.cached_input_tokens;
   group.reasoning += event.delta.reasoning_output_tokens;
   group.cost += event.delta.cost_usd;
+  group.inputCost += event.delta.input_cost_usd || 0;
+  group.outputCost += event.delta.output_cost_usd || 0;
   group.unpriced += event.delta.unpriced_events || 0;
   group.eventCount += 1;
+  group.turnCount = Math.max(group.turnCount, event.groupIndex || 1);
   group.eventIds.push(event.index);
   addModelUsage(group.modelUsage, event);
   group.modelBreakdown = modelUsageToBreakdown(group.modelUsage);
@@ -616,6 +631,8 @@ async function readSessionStats(file, minTimestamp, priceOptions) {
       const serviceTier = event.serviceTier || currentServiceTier;
       const cost = calculateUsageCost(delta, model, serviceTier, priceOptions);
       delta.cost_usd = cost.total;
+      delta.input_cost_usd = cost.inputCost;
+      delta.output_cost_usd = cost.outputCost;
       delta.unpriced_events = cost.known ? 0 : 1;
       previous = current;
 
@@ -891,6 +908,8 @@ function summarizeAccounts(accounts, todayStart, sevenStart, monthStart) {
         cached_input_tokens: day.cached,
         reasoning_output_tokens: day.reasoning,
         cost_usd: day.cost,
+        input_cost_usd: day.inputCost,
+        output_cost_usd: day.outputCost,
         unpriced_events: day.unpriced
       });
     }
@@ -917,7 +936,7 @@ function findLatestAccountUsage(accounts) {
       continue;
     }
     const candidate = {
-      ...account.latestSessionGroup,
+      ...(account.latestTurnGroup || account.latestSessionGroup),
       accountId: account.id,
       accountLabel: account.label,
       session: { fullPath: account.latestSessionGroup.file }
@@ -946,6 +965,8 @@ function buildDaySeries(startMs, count, dailyMap) {
       cached: usage.cached_input_tokens,
       reasoning: usage.reasoning_output_tokens,
       cost: usage.cost_usd,
+      inputCost: usage.input_cost_usd,
+      outputCost: usage.output_cost_usd,
       unpriced: usage.unpriced_events
     };
   });
@@ -993,6 +1014,8 @@ function emptyUsage() {
     reasoning_output_tokens: 0,
     total_tokens: 0,
     cost_usd: 0,
+    input_cost_usd: 0,
+    output_cost_usd: 0,
     unpriced_events: 0
   };
 }
@@ -1031,6 +1054,8 @@ function addUsage(left, right) {
     reasoning_output_tokens: left.reasoning_output_tokens + right.reasoning_output_tokens,
     total_tokens: left.total_tokens + right.total_tokens,
     cost_usd: numberOrZero(left.cost_usd) + numberOrZero(right.cost_usd),
+    input_cost_usd: numberOrZero(left.input_cost_usd) + numberOrZero(right.input_cost_usd),
+    output_cost_usd: numberOrZero(left.output_cost_usd) + numberOrZero(right.output_cost_usd),
     unpriced_events: numberOrZero(left.unpriced_events) + numberOrZero(right.unpriced_events)
   };
 }
@@ -1055,6 +1080,8 @@ function sessionGroupToUsage(group) {
     reasoning_output_tokens: numberOrZero(group && group.reasoning),
     total_tokens: numberOrZero(group && group.total),
     cost_usd: numberOrZero(group && group.cost),
+    input_cost_usd: numberOrZero(group && group.inputCost),
+    output_cost_usd: numberOrZero(group && group.outputCost),
     unpriced_events: numberOrZero(group && group.unpriced)
   };
 }
@@ -1107,7 +1134,7 @@ function calculateUsageCost(usage, model, serviceTier, options = {}) {
   const description = result.known
     ? `${result.modelKey} / ${serviceTier || "standard"}: ${result.detail}; USD ${result.total.toFixed(6)}`
     : `${model || "unknown"}: price unavailable; configure codexTokenMonitor.modelPrices`;
-  return { total: result.total, known: result.known, calculation: description };
+  return { total: result.total, inputCost: result.inputCost || 0, outputCost: result.outputCost || 0, known: result.known, calculation: description };
 }
 
 function normalizeModelName(value) {
@@ -1311,6 +1338,11 @@ function getDashboardHtml() {
     .swatch { width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
     .swatch.output { background: var(--accent2); }
     .swatch.point { background: var(--accent3); }
+    .range-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+    .range-select { font-size: 14px; font-weight: 650; padding: 0 20px 0 0; min-height: 27px; color: var(--fg); background-color: transparent; border: 0; cursor: pointer; }
+    .range-select:focus-visible { outline: 1px solid var(--vscode-focusBorder); }
+    .range-note { font-size: 10px; color: var(--muted); }
+    .bar-group { cursor: pointer; }
     .chart-tip {
       position: fixed;
       display: none;
@@ -1323,7 +1355,8 @@ function getDashboardHtml() {
       color: var(--vscode-editorHoverWidget-foreground);
       box-shadow: 0 4px 12px rgba(0,0,0,.18);
       font-size: 12px;
-      max-width: 260px;
+      max-width: 330px;
+      white-space: pre-line;
     }
     table { width: 100%; border-collapse: separate; border-spacing: 0 5px; font-size: 12px; }
     th, td { text-align: left; padding: 7px 6px; white-space: nowrap; }
@@ -1375,16 +1408,18 @@ function getDashboardHtml() {
           <div class="chart" id="todayChart"></div>
         </section>
         <section class="panel">
-          <h2>Last 7 Days</h2>
-          <div class="legend">
-            <span class="key"><span class="swatch"></span>Input</span>
-            <span class="key"><span class="swatch output"></span>Output</span>
+          <div class="range-heading">
+            <select id="usageRangeSelect" class="range-select" aria-label="Select history range" title="Switch between 7 and 30 days">
+              <option value="7">Last 7 Days</option>
+              <option value="30">Last 30 Days</option>
+            </select>
           </div>
-          <div class="chart" id="weekChart"></div>
-        </section>
-        <section class="panel">
-          <h2>Last 30 Days</h2>
-          <div class="chart" id="monthChart"></div>
+          <div class="legend">
+            <span class="key"><span class="swatch"></span>Input (left scale)</span>
+            <span class="key"><span class="swatch output"></span>Output (right scale)</span>
+            <span class="range-note">Independent scales make small output totals visible</span>
+          </div>
+          <div class="chart" id="usageChart"></div>
         </section>
       </div>
       <div class="stack">
@@ -1402,11 +1437,15 @@ function getDashboardHtml() {
   </main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
-    let state = { data: null, accountId: "all" };
+    let state = { data: null, accountId: "all", rangeDays: 7 };
 
     document.getElementById("refreshButton").addEventListener("click", () => vscode.postMessage({ command: "refresh" }));
     document.getElementById("openButton").addEventListener("click", () => vscode.postMessage({ command: "openLatestSession" }));
     document.getElementById("folderButton").addEventListener("click", () => vscode.postMessage({ command: "chooseSessionsRoot" }));
+    document.getElementById("usageRangeSelect").addEventListener("change", event => {
+      state.rangeDays = Number(event.target.value) === 30 ? 30 : 7;
+      render();
+    });
     document.getElementById("accountSelect").addEventListener("change", (event) => {
       state.accountId = event.target.value;
       render();
@@ -1458,8 +1497,8 @@ function getDashboardHtml() {
       renderModelTable(data.latestSessionGroup);
       renderSummary(data);
       renderTimeline("todayChart", data.todayPoints || [], data.todaySessionGroups || []);
-      renderBars("weekChart", data.sevenDays || [], true);
-      renderBars("monthChart", data.monthDays || [], false);
+      document.getElementById("usageRangeSelect").value = String(state.rangeDays);
+      renderBars("usageChart", state.rangeDays === 30 ? (data.monthDays || []) : (data.sevenDays || []));
       renderSessions(data.recentSessions || []);
       renderEvents(data.todayPoints || []);
     }
@@ -1577,46 +1616,54 @@ function getDashboardHtml() {
       }).filter(Boolean);
     }
 
-    function renderBars(id, days, stacked) {
+    function renderBars(id, days) {
       const host = document.getElementById(id);
-      if (!days.length || days.every((day) => !day.total)) {
+      if (!days.length || days.every(day => !day.input && !day.output)) {
         host.innerHTML = '<div class="empty">No usage in this range.</div>';
         return;
       }
       const width = 760;
       const height = 210;
-      const pad = 28;
-      const gap = days.length > 10 ? 3 : 10;
-      const maxValue = Math.max(...days.map((day) => day.total), 1);
-      const barWidth = Math.max(4, ((width - pad * 2) - gap * (days.length - 1)) / days.length);
-      host.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img">' +
-        '<line class="axis" x1="' + pad + '" y1="' + (height - pad) + '" x2="' + (width - pad) + '" y2="' + (height - pad) + '"></line>' +
+      const pad = 42;
+      const innerHeight = height - pad * 2;
+      const inputMax = Math.max(...days.map(day => day.input || 0), 1);
+      const outputMax = Math.max(...days.map(day => day.output || 0), 1);
+      const slotWidth = (width - pad * 2) / days.length;
+      const pairWidth = Math.min(slotWidth * .78, days.length > 14 ? 17 : 48);
+      const gap = Math.max(1, pairWidth * .08);
+      const barWidth = (pairWidth - gap) / 2;
+      const bottom = height - pad;
+      host.innerHTML = '<svg viewBox="0 0 ' + width + ' ' + height + '" role="img" aria-label="Daily input and output tokens on separate scales">' +
+        '<line class="axis" x1="' + pad + '" y1="' + bottom + '" x2="' + (width-pad) + '" y2="' + bottom + '"></line>' +
         days.map((day, index) => {
-          const x = pad + index * (barWidth + gap);
-          const inputHeight = stacked ? (day.input / maxValue) * (height - pad * 2) : (day.total / maxValue) * (height - pad * 2);
-          const outputHeight = stacked ? (day.output / maxValue) * (height - pad * 2) : 0;
-          const totalHeight = (day.total / maxValue) * (height - pad * 2);
-          const yTotal = height - pad - totalHeight;
-          const yInput = height - pad - inputHeight;
-          const yOutput = yInput - outputHeight;
-          const title = escapeHtml(day.label + " " + fmt(day.total) + " tokens · " + money(day.cost, day.unpriced));
-          const attrs = ' data-bar-title="' + title + '"';
-          if (stacked) {
-            return '<g class="bar-group"' + attrs + '><rect class="bar" x="' + x + '" y="' + yInput + '" width="' + barWidth + '" height="' + Math.max(inputHeight, 1) + '"></rect>' +
-              '<rect class="bar-output" x="' + x + '" y="' + yOutput + '" width="' + barWidth + '" height="' + Math.max(outputHeight, 0) + '"></rect>' +
-              labelForBar(day, x + barWidth / 2, height, days.length) + '</g>';
-          }
-          return '<g class="bar-group"' + attrs + '><rect class="bar" x="' + x + '" y="' + yTotal + '" width="' + barWidth + '" height="' + Math.max(totalHeight, 1) + '"></rect>' +
-            labelForBar(day, x + barWidth / 2, height, days.length) + '</g>';
+          const center = pad + slotWidth * (index + .5);
+          const x = center - pairWidth / 2;
+          const inputHeight = Math.max(0, day.input || 0) / inputMax * innerHeight;
+          const outputHeight = Math.max(0, day.output || 0) / outputMax * innerHeight;
+          const title = escapeHtml([
+            day.label + ' · ' + fmt(day.total) + ' total tokens',
+            'Input: ' + fmt(day.input) + ' (cached ' + fmt(day.cached) + ')',
+            'Input cost: ' + money(day.inputCost, day.unpriced),
+            'Output: ' + fmt(day.output),
+            'Output cost: ' + money(day.outputCost, day.unpriced),
+            'Total cost: ' + money(day.cost, day.unpriced)
+          ].join(String.fromCharCode(10)));
+          return '<g class="bar-group" data-bar-title="' + title + '">' +
+            '<rect class="bar" x="' + x.toFixed(2) + '" y="' + (bottom-inputHeight).toFixed(2) + '" width="' + barWidth.toFixed(2) + '" height="' + Math.max(inputHeight,day.input?1:0).toFixed(2) + '"></rect>' +
+            '<rect class="bar-output" x="' + (x+barWidth+gap).toFixed(2) + '" y="' + (bottom-outputHeight).toFixed(2) + '" width="' + barWidth.toFixed(2) + '" height="' + Math.max(outputHeight,day.output?1:0).toFixed(2) + '"></rect>' +
+            labelForBar(day, center, height, days.length) +
+            '<rect x="' + (center-slotWidth/2).toFixed(2) + '" y="0" width="' + slotWidth.toFixed(2) + '" height="' + bottom + '" fill="transparent"></rect>' +
+            '</g>';
         }).join("") +
-        '<text class="tick" x="' + pad + '" y="14">max ' + fmt(maxValue) + '</text>' +
+        '<text class="tick" text-anchor="start" x="' + pad + '" y="14">Input max ' + fmt(inputMax) + '</text>' +
+        '<text class="tick" text-anchor="end" x="' + (width-pad) + '" y="14">Output max ' + fmt(outputMax) + '</text>' +
         '</svg>';
       wireBarHover(host);
     }
 
     function labelForBar(day, x, height, count) {
       if (count > 14 && !day.key.endsWith("-01") && !day.label.endsWith("/1")) return "";
-      return '<text class="tick" text-anchor="middle" x="' + x + '" y="' + (height - 8) + '">' + escapeHtml(day.label) + '</text>';
+      return '<text class="tick" text-anchor="middle" x="' + x.toFixed(2) + '" y="' + (height - 8) + '">' + escapeHtml(day.label) + '</text>';
     }
 
     function renderSessions(sessions) {
@@ -1626,8 +1673,8 @@ function getDashboardHtml() {
         return;
       }
       const max = Math.max(...sessions.map((session) => session.total), 1);
-      host.innerHTML = '<table><thead><tr><th>Cost</th><th>Time</th><th>Input</th><th>Cache</th><th>Output</th><th>Total</th><th>Dialog</th></tr></thead><tbody>' +
-        sessions.map((session) => '<tr data-session-row="' + escapeHtml(session.id) + '" style="background:' + rowColor(session.total, max) + '"><td class="money" title="' + escapeHtml(costTitle(session.modelBreakdown)) + '">' + money(session.cost, session.unpriced) + '</td><td>' + escapeHtml(shortDate(session.lastAt)) + '</td><td>' + fmt(session.input) + '</td><td>' + fmt(session.cached) + ' / ' + pct(session.cached, session.input) + '</td><td>' + fmt(session.output) + '</td><td>' + fmt(session.total) + '</td><td class="dialog" title="' + escapeHtml(session.file) + '">' + escapeHtml((session.account ? session.account + " / " : "") + session.snippet) + '</td></tr>').join("") +
+      host.innerHTML = '<table><thead><tr><th>Cost</th><th>Time</th><th>Input</th><th>Cache</th><th>Output</th><th>Total</th><th>Turns</th><th>Dialog</th></tr></thead><tbody>' +
+        sessions.map((session) => '<tr data-session-row="' + escapeHtml(session.id) + '" style="background:' + rowColor(session.total, max) + '"><td class="money" title="' + escapeHtml(costTitle(session.modelBreakdown)) + '">' + money(session.cost, session.unpriced) + '</td><td>' + escapeHtml(shortDate(session.lastAt)) + '</td><td>' + fmt(session.input) + '</td><td>' + fmt(session.cached) + ' / ' + pct(session.cached, session.input) + '</td><td>' + fmt(session.output) + '</td><td>' + fmt(session.total) + '</td><td>' + fmt(session.turnCount) + '</td><td class="dialog" title="' + escapeHtml(session.file) + '">' + escapeHtml((session.account ? session.account + " / " : "") + session.snippet) + '</td></tr>').join("") +
         '</tbody></table>';
       wireSessionRowHover(host);
     }

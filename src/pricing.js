@@ -27,9 +27,11 @@ function priceUsage(usage, model, serviceTier, builtins, options = {}) {
   const nonCachedCost = (input - cached) * resolved.price.input / 1e6;
   const cachedCost = cached * resolved.price.cached / 1e6;
   const outputCost = output * resolved.price.output / 1e6;
-  const total = (nonCachedCost + cachedCost + outputCost) * fast * markup;
+  const inputCost = (nonCachedCost + cachedCost) * fast * markup;
+  const chargedOutputCost = outputCost * fast * markup;
+  const total = inputCost + chargedOutputCost;
   return {
-    known: true, modelKey: resolved.modelKey, total,
+    known: true, modelKey: resolved.modelKey, total, inputCost, outputCost: chargedOutputCost,
     detail: `uncached ${input-cached} × $${resolved.price.input}/M + cached ${cached} × $${resolved.price.cached}/M + output ${output} × $${resolved.price.output}/M; fast ×${fast}; markup ×${markup}`
   };
 }
