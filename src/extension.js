@@ -1200,7 +1200,7 @@ function summarizeModelBreakdown(breakdown) {
     const item = models[0];
     return `${item.model} / ${item.reasoningEffort || "unknown"} / ${item.serviceTier || "standard"}`;
   }
-  return `${models.length} models`;
+  return `${models.length} model/effort combinations`;
 }
 
 function buildCostCalculation(breakdown) {
