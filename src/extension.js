@@ -7,6 +7,7 @@ const readline = require("readline");
 const vscode = require("vscode");
 const { resolvePrice, priceUsage } = require("./pricing");
 const { scanRoots, dedupeFiles } = require("./session-roots");
+const { sessionGroupId, turnGroupId } = require("./grouping");
 
 const EXTENSION_ID = "codexTokenMonitor";
 const TOKEN_EVENT = '"type":"token_count"';
@@ -384,6 +385,7 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
   const todaySessionGroups = [];
   const dailyMap = new Map();
   const sessionMap = new Map();
+  const turnMap = new Map();
   const todaySessionMap = new Map();
   let latestDelta = undefined;
   let monthTotal = emptyUsage();
@@ -403,9 +405,12 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
       }
 
       const fileId = stableAccountId(file.fullPath);
-      const groupId = `session-${account.id}-${fileId}-${event.groupIndex}`;
+      const groupId = sessionGroupId(account.id, fileId);
+      const turnId = turnGroupId(account.id, fileId, event.groupIndex);
       const group = getSessionGroup(sessionMap, groupId, account, file, event);
       addEventToSessionGroup(group, event);
+      const turnGroup = getSessionGroup(turnMap, turnId, account, file, event);
+      addEventToSessionGroup(turnGroup, event);
 
       monthTotal = addUsage(monthTotal, event.delta);
       addUsageToMap(dailyMap, localDateKey(event.timestamp), event.delta);
@@ -415,13 +420,13 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
       }
       if (time >= ranges.todayStart && time < ranges.todayEnd) {
         const eventId = `event-${account.id}-${fileId}-${event.index}`;
-        const todayGroup = getSessionGroup(todaySessionMap, groupId, account, file, event);
+        const todayGroup = getSessionGroup(todaySessionMap, turnId, account, file, event);
         addEventToSessionGroup(todayGroup, event);
 
         todayTotal = addUsage(todayTotal, event.delta);
         todayPoints.push({
           id: eventId,
-          sessionId: groupId,
+          sessionId: turnId,
           timestamp: event.timestamp,
           time: formatLocalTime(event.timestamp),
           total: event.delta.total_tokens,
@@ -430,6 +435,8 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
           cached: event.delta.cached_input_tokens,
           reasoning: event.delta.reasoning_output_tokens,
           cost: event.delta.cost_usd,
+          inputCost: event.delta.input_cost_usd,
+          outputCost: event.delta.output_cost_usd,
           unpriced: event.delta.unpriced_events,
           costCalculation: event.costCalculation,
           model: event.model,
@@ -455,6 +462,7 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
   todayPoints.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
   const sessions = Array.from(sessionMap.values()).sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime());
   const latestSessionGroup = sessions[0];
+  const latestTurnGroup = Array.from(turnMap.values()).sort((a, b) => new Date(b.lastAt).getTime() - new Date(a.lastAt).getTime())[0];
   for (const group of todaySessionMap.values()) {
     if (group.eventCount > 0) {
       todaySessionGroups.push(group);
@@ -479,6 +487,7 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
     monthDays: buildDaySeries(ranges.monthStart, 30, dailyMap),
     recentSessions: sessions.slice(0, 20),
     latestSessionGroup,
+    latestTurnGroup,
     latestDelta
   };
 }
@@ -534,8 +543,11 @@ function getSessionGroup(map, id, account, file, event) {
       cached: 0,
       reasoning: 0,
       cost: 0,
+      inputCost: 0,
+      outputCost: 0,
       unpriced: 0,
       eventCount: 0,
+      turnCount: 0,
       eventIds: [],
       modelUsage: {},
       modelBreakdown: [],
@@ -553,8 +565,11 @@ function addEventToSessionGroup(group, event) {
   group.cached += event.delta.cached_input_tokens;
   group.reasoning += event.delta.reasoning_output_tokens;
   group.cost += event.delta.cost_usd;
+  group.inputCost += event.delta.input_cost_usd || 0;
+  group.outputCost += event.delta.output_cost_usd || 0;
   group.unpriced += event.delta.unpriced_events || 0;
   group.eventCount += 1;
+  group.turnCount = Math.max(group.turnCount, event.groupIndex || 1);
   group.eventIds.push(event.index);
   addModelUsage(group.modelUsage, event);
   group.modelBreakdown = modelUsageToBreakdown(group.modelUsage);
@@ -616,6 +631,8 @@ async function readSessionStats(file, minTimestamp, priceOptions) {
       const serviceTier = event.serviceTier || currentServiceTier;
       const cost = calculateUsageCost(delta, model, serviceTier, priceOptions);
       delta.cost_usd = cost.total;
+      delta.input_cost_usd = cost.inputCost;
+      delta.output_cost_usd = cost.outputCost;
       delta.unpriced_events = cost.known ? 0 : 1;
       previous = current;
 
@@ -891,6 +908,8 @@ function summarizeAccounts(accounts, todayStart, sevenStart, monthStart) {
         cached_input_tokens: day.cached,
         reasoning_output_tokens: day.reasoning,
         cost_usd: day.cost,
+        input_cost_usd: day.inputCost,
+        output_cost_usd: day.outputCost,
         unpriced_events: day.unpriced
       });
     }
@@ -917,7 +936,7 @@ function findLatestAccountUsage(accounts) {
       continue;
     }
     const candidate = {
-      ...account.latestSessionGroup,
+      ...(account.latestTurnGroup || account.latestSessionGroup),
       accountId: account.id,
       accountLabel: account.label,
       session: { fullPath: account.latestSessionGroup.file }
@@ -946,6 +965,8 @@ function buildDaySeries(startMs, count, dailyMap) {
       cached: usage.cached_input_tokens,
       reasoning: usage.reasoning_output_tokens,
       cost: usage.cost_usd,
+      inputCost: usage.input_cost_usd,
+      outputCost: usage.output_cost_usd,
       unpriced: usage.unpriced_events
     };
   });
@@ -993,6 +1014,8 @@ function emptyUsage() {
     reasoning_output_tokens: 0,
     total_tokens: 0,
     cost_usd: 0,
+    input_cost_usd: 0,
+    output_cost_usd: 0,
     unpriced_events: 0
   };
 }
@@ -1031,6 +1054,8 @@ function addUsage(left, right) {
     reasoning_output_tokens: left.reasoning_output_tokens + right.reasoning_output_tokens,
     total_tokens: left.total_tokens + right.total_tokens,
     cost_usd: numberOrZero(left.cost_usd) + numberOrZero(right.cost_usd),
+    input_cost_usd: numberOrZero(left.input_cost_usd) + numberOrZero(right.input_cost_usd),
+    output_cost_usd: numberOrZero(left.output_cost_usd) + numberOrZero(right.output_cost_usd),
     unpriced_events: numberOrZero(left.unpriced_events) + numberOrZero(right.unpriced_events)
   };
 }
@@ -1055,6 +1080,8 @@ function sessionGroupToUsage(group) {
     reasoning_output_tokens: numberOrZero(group && group.reasoning),
     total_tokens: numberOrZero(group && group.total),
     cost_usd: numberOrZero(group && group.cost),
+    input_cost_usd: numberOrZero(group && group.inputCost),
+    output_cost_usd: numberOrZero(group && group.outputCost),
     unpriced_events: numberOrZero(group && group.unpriced)
   };
 }
@@ -1107,7 +1134,7 @@ function calculateUsageCost(usage, model, serviceTier, options = {}) {
   const description = result.known
     ? `${result.modelKey} / ${serviceTier || "standard"}: ${result.detail}; USD ${result.total.toFixed(6)}`
     : `${model || "unknown"}: price unavailable; configure codexTokenMonitor.modelPrices`;
-  return { total: result.total, known: result.known, calculation: description };
+  return { total: result.total, inputCost: result.inputCost || 0, outputCost: result.outputCost || 0, known: result.known, calculation: description };
 }
 
 function normalizeModelName(value) {
