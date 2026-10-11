@@ -57,6 +57,7 @@ class CodexTokenMonitor {
     this.refreshing = false;
     this.latestSession = undefined;
     this.latestUsage = undefined;
+    this.latestTurnUsage = undefined;
     this.todayTotal = 0;
     this.lastError = undefined;
     this.dashboardData = undefined;
@@ -195,6 +196,7 @@ class CodexTokenMonitor {
       this.dashboardData = dashboardData;
       this.latestSession = latest && latest.session;
       this.latestUsage = latest && latest.usage;
+      this.latestTurnUsage = latest && latest.turnUsage;
       this.todayTotal = dashboardData.totals.today.total_tokens;
       this.lastError = undefined;
       this.render();
@@ -237,7 +239,7 @@ class CodexTokenMonitor {
     const cost = numberOrZero(this.latestUsage.cost);
     const missing = numberOrZero(this.latestUsage.unpriced);
 
-    this.status.text = `$(pulse) ${time} +${formatCount(total)}(in ${formatCount(input)}, cache ${formatCount(cached)}${formatPercent(cachePercent)})  ${formatMoney(cost, missing)}`;
+    this.status.text = `$(pulse) ${time} Session ${formatCount(total)}(in ${formatCount(input)}, cache ${formatCount(cached)}${formatPercent(cachePercent)})  ${formatMoney(cost, missing)}`;
     this.status.tooltip = this.buildTooltip();
   }
 
@@ -260,6 +262,9 @@ class CodexTokenMonitor {
     markdown.appendMarkdown(`| Input | ${formatCount(input)} · Cache hit **${formatCount(cached)} / ${formatPercent(percentOf(cached, input))}** |\n`);
     markdown.appendMarkdown(`| Output | ${formatCount(numberOrZero(usage.output_tokens))} · Reasoning ${formatCount(numberOrZero(usage.reasoning_output_tokens))} |\n\n`);
     markdown.appendMarkdown(`**Session cost:** ${formatMoney(this.latestUsage.cost, this.latestUsage.unpriced)}\n\n`);
+    if (this.latestTurnUsage) {
+      markdown.appendMarkdown(`Latest turn (separate from session total): ${formatCount(this.latestTurnUsage.total)} tokens · ${formatMoney(this.latestTurnUsage.cost, this.latestTurnUsage.unpriced)}\n\n`);
+    }
     // markdown.appendMarkdown("```text\n" + buildCostCalculation(this.latestUsage.modelBreakdown) + "\n```\n");
     if (this.lastError) {
       markdown.appendMarkdown(`\nLast watcher error: ${escapeMarkdown(this.lastError)}\n`);
@@ -932,19 +937,23 @@ function summarizeAccounts(accounts, todayStart, sevenStart, monthStart) {
 function findLatestAccountUsage(accounts) {
   let latest = undefined;
   for (const account of accounts) {
-    if (!account.latestSessionGroup) {
-      continue;
-    }
-    const candidate = {
-      ...(account.latestTurnGroup || account.latestSessionGroup),
+    const group = account.latestSessionGroup;
+    if (!group) continue;
+
+    // Status bar and "Session cost" refer to the entire rollout, not its
+    // most recent prompt turn (which can cover only one model/effort).
+    const sessionUsage = {
+      ...group,
       accountId: account.id,
-      accountLabel: account.label,
-      session: { fullPath: account.latestSessionGroup.file }
+      accountLabel: account.label
     };
-    if (!latest || new Date(candidate.lastAt).getTime() > new Date(latest.usage.lastAt).getTime()) {
+    if (!latest || new Date(sessionUsage.lastAt).getTime() > new Date(latest.usage.lastAt).getTime()) {
       latest = {
-        session: candidate.session,
-        usage: candidate
+        session: { fullPath: group.file },
+        usage: sessionUsage,
+        turnUsage: account.latestTurnGroup && account.latestTurnGroup.file === group.file
+          ? account.latestTurnGroup
+          : undefined
       };
     }
   }
@@ -1191,7 +1200,7 @@ function summarizeModelBreakdown(breakdown) {
     const item = models[0];
     return `${item.model} / ${item.reasoningEffort || "unknown"} / ${item.serviceTier || "standard"}`;
   }
-  return `${models.length} models`;
+  return `${models.length} model/effort combinations`;
 }
 
 function buildCostCalculation(breakdown) {

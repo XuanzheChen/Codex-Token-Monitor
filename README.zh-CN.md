@@ -157,3 +157,10 @@ npm.cmd run package
 - Last 7 Days 与 Last 30 Days 合并为一张可通过标题下拉切换的图；输入和输出使用独立刻度，悬停显示输入（含缓存）、输出及两者分别的费用（包括中转倍率和币种汇率）。两个刻度独立，**柱高不可直接比较两者绝对 Token 数**。
 - Recent Sessions 按真实 Codex rollout JSONL 会话汇总，不再按用户每条消息产生伪 Session；新增 Turns 列。Today Timeline 仍保留细粒度 Prompt Turn 标记，状态栏继续显示最新一轮 Token。
 - 未知模型的价格仍显示 N/A，避免将不完整费用当成完整金额。
+
+
+## v0.5.1：状态栏 Session 口径修复
+
+- VS Code 右下角状态栏和悬浮提示的 Session total、Input、Cache、Output、Session cost 现在都使用同一个 **rollout JSONL 会话累计值**，不再误用最近一轮用户输入的 `latestTurnGroup`。
+- 悬浮提示中的最新一轮用量与费用单独标明 **Latest turn**，便于分清会话累计与最近一轮。
+- 多模型、多 effort 的会话费用为该 Session 内所有计费用量的汇总。计费单价、缓存和倍率设置保持不变。
