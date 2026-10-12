@@ -172,3 +172,10 @@ npm.cmd run package
 - Today 与 Cache 合并为同一张卡；Today、7 Days、30 Days 均显示 Token 总量、缓存 Token、费用、输入/输出，以及 **缓存命中率** = 缓存输入 / 总输入，**输出/输入比** = 输出 / 总输入。
 - Sessions 卡片分为 Today、7 Days、30 Days、Total 四项。Today / 7 Days / 30 Days 表示该时间范围内发生过 Token 事件的**不同 rollout 会话文件数**；Total 是扫描到的所有去重后的 JSONL 文件数（含归档，不受 30 天限制），包括没有 Token 事件的文件。一个会话跨多天活跃时可以计入多个时间范围，但每个范围内部只算一次。跨账户先去重后合并。
 - Today Timeline 保持不变，等待后续需求决策。
+
+
+## v0.6.1：Sessions 汇总与 Cached 可读性修复
+
+- 修复 `All accounts` 视图下 Sessions 的 Today / 7 Days / 30 Days / Total 错误显示 0：将后台已计算的 `sessionCounts` 传递到总览卡片，同时保持单账户过滤行为。
+- Today、7 Days、30 Days 统计卡片里，Cached Token 改为独立、与总量并列的绿色大数字，缓存命中率仍在下方展示。
+- 继续保留按实际 rollout 日志去重以及归档目录支持。不改 Today Timeline。
