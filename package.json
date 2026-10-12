@@ -2,7 +2,7 @@
   "name": "codex-token-usage",
   "displayName": "Codex Token Usage",
   "description": "Realtime Codex token usage and cost monitor for the VS Code status bar.",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "publisher": "XuanzheChen",
   "license": "MIT",
   "repository": {

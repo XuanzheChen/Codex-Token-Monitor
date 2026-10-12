@@ -367,7 +367,7 @@ async function buildDashboardData(accounts, priceOptions, display) {
       monthStart
     }, priceOptions, seenRolloutFiles);
     fileCount += data.files;
-    sessionCount += data.sessions;
+    sessionCount += data.sessionCounts.total;
     accountsData.push(data);
   }
 
@@ -378,6 +378,7 @@ async function buildDashboardData(accounts, priceOptions, display) {
     display,
     files: fileCount,
     sessions: sessionCount,
+    sessionCounts: totals.sessionCounts,
     totals,
     accounts: accountsData
   };
@@ -392,6 +393,8 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
   const sessionMap = new Map();
   const turnMap = new Map();
   const todaySessionMap = new Map();
+  const todaySessionIds = new Set();
+  const sevenSessionIds = new Set();
   let latestDelta = undefined;
   let monthTotal = emptyUsage();
   let sevenTotal = emptyUsage();
@@ -411,6 +414,8 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
 
       const fileId = stableAccountId(file.fullPath);
       const groupId = sessionGroupId(account.id, fileId);
+      if (time >= ranges.sevenStart) sevenSessionIds.add(groupId);
+      if (time >= ranges.todayStart && time < ranges.todayEnd) todaySessionIds.add(groupId);
       const turnId = turnGroupId(account.id, fileId, event.groupIndex);
       const group = getSessionGroup(sessionMap, groupId, account, file, event);
       addEventToSessionGroup(group, event);
@@ -481,6 +486,12 @@ async function buildAccountUsage(account, ranges, priceOptions, seenRolloutFiles
     root: account.root,
     files: files.length,
     sessions: sessions.length,
+    sessionCounts: {
+      today: todaySessionIds.size,
+      seven: sevenSessionIds.size,
+      month: sessions.length,
+      total: files.length
+    },
     totals: {
       today: todayTotal,
       seven: sevenTotal,
@@ -894,8 +905,12 @@ function summarizeAccounts(accounts, todayStart, sevenStart, monthStart) {
   let today = emptyUsage();
   let seven = emptyUsage();
   let month = emptyUsage();
+  const sessionCounts = { today: 0, seven: 0, month: 0, total: 0 };
 
   for (const account of accounts) {
+    for (const key of Object.keys(sessionCounts)) {
+      sessionCounts[key] += numberOrZero(account.sessionCounts && account.sessionCounts[key]);
+    }
     today = addUsage(today, account.totals.today);
     seven = addUsage(seven, account.totals.seven);
     month = addUsage(month, account.totals.month);
@@ -926,6 +941,7 @@ function summarizeAccounts(accounts, todayStart, sevenStart, monthStart) {
     today,
     seven,
     month,
+    sessionCounts,
     todayPoints: allTodayPoints,
     todaySessionGroups: allTodaySessionGroups,
     sevenDays: buildDaySeries(sevenStart, 7, dailyMap),
@@ -990,6 +1006,7 @@ function emptyDashboardData(accounts) {
     generatedAt: new Date().toISOString(),
     files: 0,
     sessions: 0,
+    sessionCounts: { today: 0, seven: 0, month: 0, total: 0 },
     totals: {
       today: emptyUsage(),
       seven: emptyUsage(),
@@ -1005,6 +1022,7 @@ function emptyDashboardData(accounts) {
       root: account.root,
       files: 0,
       sessions: 0,
+      sessionCounts: { today: 0, seven: 0, month: 0, total: 0 },
       totals: { today: emptyUsage(), seven: emptyUsage(), month: emptyUsage() },
       todayPoints: [],
       todaySessionGroups: [],
@@ -1316,7 +1334,7 @@ function getDashboardHtml() {
     }
     button { cursor: pointer; background: var(--vscode-button-secondaryBackground); }
     button.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: transparent; }
-    .summary { display: grid; grid-template-columns: repeat(5, minmax(130px, 1fr)); gap: 10px; margin: 12px 0 16px; }
+    .summary { display: grid; grid-template-columns: repeat(2, minmax(220px, 1fr)); gap: 10px; margin: 12px 0 16px; }
     .metric, .panel {
       background: var(--panel);
       border: 1px solid var(--line);
@@ -1326,6 +1344,15 @@ function getDashboardHtml() {
     .metric .label { color: var(--muted); font-size: 12px; margin-bottom: 6px; }
     .metric .value { font-size: 24px; font-weight: 700; line-height: 1.1; }
     .metric .detail { color: var(--muted); font-size: 11px; margin-top: 5px; }
+    .metric .primary-line { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
+    .metric .cached-total { color: var(--muted); font-size: 12px; }
+    .session-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 9px; }
+    .session-stats .stat-label { color: var(--muted); font-size: 11px; }
+    .session-stats .stat-value { font-weight: 650; font-size: 19px; }
+    @media (max-width: 660px) {
+      .summary { grid-template-columns: minmax(0,1fr); }
+      .session-stats { grid-template-columns: repeat(2,minmax(0,1fr)); }
+    }
     .grid { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(320px, .75fr); gap: 12px; }
     .panel { padding: 14px; min-width: 0; }
     .panel h2 { margin: 0 0 10px; font-size: 14px; font-weight: 650; }
@@ -1383,7 +1410,6 @@ function getDashboardHtml() {
     @media (max-width: 840px) {
       header { display: block; }
       .toolbar { justify-content: flex-start; margin-top: 12px; }
-      .summary { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
       .grid { grid-template-columns: 1fr; }
     }
   </style>
@@ -1517,16 +1543,42 @@ function getDashboardHtml() {
       const seven = data.totals.seven || {};
       const month = data.totals.month || {};
       document.getElementById("summary").innerHTML = [
-        metric("Today", today.total_tokens, money(today.cost_usd, today.unpriced_events) + " · input " + fmt(today.input_tokens) + " / output " + fmt(today.output_tokens)),
-        metric("Cache", today.cached_input_tokens, fmt(today.cached_input_tokens) + " / " + pct(today.cached_input_tokens, today.input_tokens)),
-        metric("7 Days", seven.total_tokens, money(seven.cost_usd, seven.unpriced_events) + " · cached " + fmt(seven.cached_input_tokens)),
-        metric("30 Days", month.total_tokens, money(month.cost_usd, month.unpriced_events) + " · reasoning " + fmt(month.reasoning_output_tokens)),
-        metric("Sessions", data.sessions, data.files + " files scanned")
+        periodMetric("Today", today),
+        periodMetric("7 Days", seven),
+        periodMetric("30 Days", month),
+        sessionsMetric(data.sessionCounts || {})
       ].join("");
     }
 
-    function metric(label, value, detail) {
-      return '<div class="metric"><div class="label">' + escapeHtml(label) + '</div><div class="value">' + fmt(value) + '</div><div class="detail">' + escapeHtml(detail) + '</div></div>';
+    function periodMetric(label, usage) {
+      return '<div class="metric">' +
+        '<div class="label">' + escapeHtml(label) + '</div>' +
+        '<div class="primary-line"><div class="value">' + fmt(usage.total_tokens) + '</div>' +
+        '<div class="cached-total">Cached ' + fmt(usage.cached_input_tokens) + '</div></div>' +
+        '<div class="detail">' + escapeHtml(money(usage.cost_usd, usage.unpriced_events)) +
+        ' · input ' + fmt(usage.input_tokens) + ' / output ' + fmt(usage.output_tokens) + '</div>' +
+        '<div class="detail">Cache hit ' + pct(usage.cached_input_tokens, usage.input_tokens) +
+        ' · Output / input ' + ratioPct(usage.output_tokens, usage.input_tokens) + '</div>' +
+        '</div>';
+    }
+
+    function sessionsMetric(counts) {
+      const entries = [
+        ["Today", counts.today], ["7 Days", counts.seven],
+        ["30 Days", counts.month], ["Total", counts.total]
+      ];
+      return '<div class="metric sessions-metric">' +
+        '<div class="label">Sessions</div><div class="session-stats">' +
+        entries.map(([label, count]) => '<div><div class="stat-label">' + label +
+          '</div><div class="stat-value">' + fmt(count) + '</div></div>').join("") +
+        '</div><div class="detail">Unique rollout files; a session is active when a token event occurs in the period.</div></div>';
+    }
+
+    function ratioPct(part, whole) {
+      const total = Number(whole) || 0;
+      if (total <= 0) return "0%";
+      const ratio = (Number(part) || 0) / total * 100;
+      return (ratio < 1 ? ratio.toFixed(2) : trim(ratio)) + "%";
     }
 
     function renderModelTable(session) {
@@ -1666,7 +1718,17 @@ function getDashboardHtml() {
         }).join("") +
         '<text class="tick" text-anchor="start" x="' + pad + '" y="14">Input max ' + fmt(inputMax) + '</text>' +
         '<text class="tick" text-anchor="end" x="' + (width-pad) + '" y="14">Output max ' + fmt(outputMax) + '</text>' +
-        '</svg>';
+        '<g class="y-axis-ticks">' + Array.from({length:5}, (_, idx) => {
+          const fraction = idx / 4;
+          const y = bottom - fraction * innerHeight;
+          const left = fmt(inputMax * fraction);
+          const right = fmt(outputMax * fraction);
+          return '<line class="axis" x1="' + pad + '" y1="' + y.toFixed(2) +
+            '" x2="' + (width-pad) + '" y2="' + y.toFixed(2) + '" stroke-dasharray="2 5" opacity=".35"></line>' +
+            '<text class="tick" text-anchor="end" x="' + (pad-7) + '" y="' + (y+3).toFixed(2) +
+            '">' + left + '</text><text class="tick" text-anchor="start" x="' + (width-pad+7) +
+            '" y="' + (y+3).toFixed(2) + '">' + right + '</text>';
+        }).join("") + '</g></svg>';
       wireBarHover(host);
     }
 

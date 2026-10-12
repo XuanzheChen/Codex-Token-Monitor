@@ -164,3 +164,11 @@ npm.cmd run package
 - VS Code 右下角状态栏和悬浮提示的 Session total、Input、Cache、Output、Session cost 现在都使用同一个 **rollout JSONL 会话累计值**，不再误用最近一轮用户输入的 `latestTurnGroup`。
 - 悬浮提示中的最新一轮用量与费用单独标明 **Latest turn**，便于分清会话累计与最近一轮。
 - 多模型、多 effort 的会话费用为该 Session 内所有计费用量的汇总。计费单价、缓存和倍率设置保持不变。
+
+
+## v0.6.0：可读坐标轴与统计概览
+
+- 7/30 天图增加可读的左、右双纵轴，每侧分别显示 0、25%、50%、75%、100% 所对应的 Token 值。独立刻度并不意味着两边柱高可以直接比较绝对数量。
+- Today 与 Cache 合并为同一张卡；Today、7 Days、30 Days 均显示 Token 总量、缓存 Token、费用、输入/输出，以及 **缓存命中率** = 缓存输入 / 总输入，**输出/输入比** = 输出 / 总输入。
+- Sessions 卡片分为 Today、7 Days、30 Days、Total 四项。Today / 7 Days / 30 Days 表示该时间范围内发生过 Token 事件的**不同 rollout 会话文件数**；Total 是扫描到的所有去重后的 JSONL 文件数（含归档，不受 30 天限制），包括没有 Token 事件的文件。一个会话跨多天活跃时可以计入多个时间范围，但每个范围内部只算一次。跨账户先去重后合并。
+- Today Timeline 保持不变，等待后续需求决策。
