@@ -85,7 +85,12 @@ test("generated webview has one selectable history chart and shows split cost to
   assert.match(chart.innerHTML,/class="y-axis-ticks"/);
   assert.match(chart.innerHTML,/25k<\/text>/); // 25% tick on the input axis
   const overview=getElementById("summary").innerHTML;
-  assert.match(overview,/Cached 800/);
+  assert.match(overview,/class="cached-label">Cached<\/div>/);
+  assert.match(overview,/class="cached-total">800<\/div>/);
+  assert.match(overview,/class="stat-label">Today<\/div><div class="stat-value">1<\/div>/);
+  assert.match(overview,/class="stat-label">7 Days<\/div><div class="stat-value">2<\/div>/);
+  assert.match(overview,/class="stat-label">30 Days<\/div><div class="stat-value">3<\/div>/);
+  assert.match(overview,/class="stat-label">Total<\/div><div class="stat-value">4<\/div>/);
   assert.match(overview,/Cache hit 80%/);
   assert.match(overview,/Output \/ input 0\.50%/);
   assert.match(overview,/session-stats/);
@@ -129,4 +134,58 @@ test("session counts distinguish 1/7/30-day activity and all-time unique files, 
   assert.equal(summary.sessionCounts.seven,2);
   assert.equal(summary.sessionCounts.month,3);
   assert.equal(summary.sessionCounts.total,4);
+});
+
+test("All accounts and individual account filters render the correct nonzero Session counts", () => {
+  const html = getDashboardHtml();
+  assert.match(html, /\.metric \.cached-total \{ color: var\(--accent2\); font-size: 23px; font-weight: 700/);
+  const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/);
+  assert.ok(script);
+  const elements = new Map();
+  const getElementById = id => {
+    if (!elements.has(id)) elements.set(id, {
+      value:"", innerHTML:"", textContent:"", listeners:{},
+      addEventListener(type, callback){ this.listeners[type]=callback; },
+      querySelectorAll(){ return []; }
+    });
+    return elements.get(id);
+  };
+  let onMessage;
+  new vm.Script(script[1]).runInNewContext({
+    acquireVsCodeApi: () => ({ postMessage(){} }),
+    document: { getElementById },
+    window: { addEventListener(name, handler){ if (name === "message") onMessage = handler; } },
+    Date, Math, Number, String, Array, Map
+  });
+  const usage={ total_tokens:500,input_tokens:450,output_tokens:50,
+    cached_input_tokens:400,cost_usd:0.12,unpriced_events:0 };
+  const totals={today:usage,seven:usage,month:usage,
+    todayPoints:[],todaySessionGroups:[],sevenDays:[],monthDays:[]};
+  const accounts=[
+    {id:"a",label:"A",root:"/a/sessions",sessionCounts:{today:2,seven:3,month:4,total:5},
+      totals,recentSessions:[],todayPoints:[],todaySessionGroups:[],sevenDays:[],monthDays:[]},
+    {id:"b",label:"B",root:"/b/sessions",sessionCounts:{today:3,seven:4,month:5,total:6},
+      totals,recentSessions:[],todayPoints:[],todaySessionGroups:[],sevenDays:[],monthDays:[]}
+  ];
+  onMessage({data:{command:"data",data:{
+    display:{symbol:"$",rate:1},accounts,files:11,sessions:11,
+    sessionCounts:{today:5,seven:7,month:9,total:11},totals
+  }}});
+  const summary=()=>getElementById("summary").innerHTML;
+  function expectCounts(today,seven,month,total) {
+    const content=summary();
+    for (const [name,value] of [["Today",today],["7 Days",seven],["30 Days",month],["Total",total]]) {
+      assert.ok(content.includes('<div class="stat-label">' + name +
+        '</div><div class="stat-value">' + value + '</div>'),
+        name + ' should have '+value+' sessions: '+content);
+    }
+  }
+  expectCounts(5,7,9,11);
+  const selector=getElementById("accountSelect");
+  selector.listeners.change({target:{value:"a"}});
+  expectCounts(2,3,4,5);
+  selector.listeners.change({target:{value:"b"}});
+  expectCounts(3,4,5,6);
+  selector.listeners.change({target:{value:"all"}});
+  expectCounts(5,7,9,11);
 });
