@@ -85,8 +85,7 @@ test("generated webview has one selectable history chart and shows split cost to
   assert.match(chart.innerHTML,/class="y-axis-ticks"/);
   assert.match(chart.innerHTML,/25k<\/text>/); // 25% tick on the input axis
   const overview=getElementById("summary").innerHTML;
-  assert.match(overview,/class="cached-label">Cached<\/div>/);
-  assert.match(overview,/class="cached-total">800<\/div>/);
+  assert.match(overview,/class="cached-stat"><span class="cached-label">Cached<\/span><strong class="cached-total">800<\/strong><\/div>/);
   assert.match(overview,/class="stat-label">Today<\/div><div class="stat-value">1<\/div>/);
   assert.match(overview,/class="stat-label">7 Days<\/div><div class="stat-value">2<\/div>/);
   assert.match(overview,/class="stat-label">30 Days<\/div><div class="stat-value">3<\/div>/);
@@ -138,7 +137,8 @@ test("session counts distinguish 1/7/30-day activity and all-time unique files, 
 
 test("All accounts and individual account filters render the correct nonzero Session counts", () => {
   const html = getDashboardHtml();
-  assert.match(html, /\.metric \.cached-total \{ color: var\(--accent2\); font-size: 23px; font-weight: 700/);
+  assert.match(html, /\.metric \.cached-total \{ color: var\(--fg\); font-size: 12px; font-weight: 700/);
+  assert.doesNotMatch(html, /\.metric \.cached-total \{ color: var\(--accent2\)/);
   const script = html.match(/<script nonce="[^"]+">([\s\S]*?)<\/script>/);
   assert.ok(script);
   const elements = new Map();

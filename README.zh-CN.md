@@ -179,3 +179,10 @@ npm.cmd run package
 - 修复 `All accounts` 视图下 Sessions 的 Today / 7 Days / 30 Days / Total 错误显示 0：将后台已计算的 `sessionCounts` 传递到总览卡片，同时保持单账户过滤行为。
 - Today、7 Days、30 Days 统计卡片里，Cached Token 改为独立、与总量并列的绿色大数字，缓存命中率仍在下方展示。
 - 继续保留按实际 rollout 日志去重以及归档目录支持。不改 Today Timeline。
+
+
+## v0.6.2：Cached 轻量样式
+
+- 按 v0.6.0 的布局恢复 Cached 和数字单行右对齐，不再用绿色、23px 大数字或上下两行。
+- Cached 标签继续使用灰色常规字；**只有缓存 Token 数值**改为与正文同色的白色（主题前景色）、12px 粗体。
+- Sessions 四个计数、价格与缓存统计计算均不变化。
