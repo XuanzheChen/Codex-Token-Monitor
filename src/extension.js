@@ -1410,7 +1410,6 @@ function getDashboardHtml() {
     @media (max-width: 840px) {
       header { display: block; }
       .toolbar { justify-content: flex-start; margin-top: 12px; }
-      .summary { grid-template-columns: repeat(2, minmax(140px, 1fr)); }
       .grid { grid-template-columns: 1fr; }
     }
   </style>
