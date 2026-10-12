@@ -1345,7 +1345,10 @@ function getDashboardHtml() {
     .metric .value { font-size: 24px; font-weight: 700; line-height: 1.1; }
     .metric .detail { color: var(--muted); font-size: 11px; margin-top: 5px; }
     .metric .primary-line { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-    .metric .cached-total { color: var(--muted); font-size: 12px; }
+    .metric .cached-stat { display: flex; align-items: flex-end; flex-direction: column; gap: 3px; }
+    .metric .cached-label { font-size: 11px; font-weight: 500; color: var(--muted); }
+    .metric .cached-total { color: var(--accent2); font-size: 23px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .metric .value { font-variant-numeric: tabular-nums; }
     .session-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 9px; }
     .session-stats .stat-label { color: var(--muted); font-size: 11px; }
     .session-stats .stat-value { font-weight: 650; font-size: 19px; }
@@ -1513,6 +1516,7 @@ function getDashboardHtml() {
           root: state.data.accounts.map((account) => account.root).join("; "),
           files: state.data.files,
           sessions: state.data.sessions,
+          sessionCounts: state.data.sessionCounts || state.data.totals.sessionCounts || { today: 0, seven: 0, month: 0, total: 0 },
           totals: state.data.totals,
           todayPoints: state.data.totals.todayPoints,
           todaySessionGroups: state.data.totals.todaySessionGroups,
@@ -1554,7 +1558,8 @@ function getDashboardHtml() {
       return '<div class="metric">' +
         '<div class="label">' + escapeHtml(label) + '</div>' +
         '<div class="primary-line"><div class="value">' + fmt(usage.total_tokens) + '</div>' +
-        '<div class="cached-total">Cached ' + fmt(usage.cached_input_tokens) + '</div></div>' +
+        '<div class="cached-stat"><div class="cached-label">Cached</div><div class="cached-total">' +
+        fmt(usage.cached_input_tokens) + '</div></div></div>' +
         '<div class="detail">' + escapeHtml(money(usage.cost_usd, usage.unpriced_events)) +
         ' · input ' + fmt(usage.input_tokens) + ' / output ' + fmt(usage.output_tokens) + '</div>' +
         '<div class="detail">Cache hit ' + pct(usage.cached_input_tokens, usage.input_tokens) +
