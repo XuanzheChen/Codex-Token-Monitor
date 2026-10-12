@@ -1345,9 +1345,9 @@ function getDashboardHtml() {
     .metric .value { font-size: 24px; font-weight: 700; line-height: 1.1; }
     .metric .detail { color: var(--muted); font-size: 11px; margin-top: 5px; }
     .metric .primary-line { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 8px; }
-    .metric .cached-stat { display: flex; align-items: flex-end; flex-direction: column; gap: 3px; }
-    .metric .cached-label { font-size: 11px; font-weight: 500; color: var(--muted); }
-    .metric .cached-total { color: var(--accent2); font-size: 23px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
+    .metric .cached-stat { display: inline-flex; align-items: baseline; gap: 4px; white-space: nowrap; }
+    .metric .cached-label { color: var(--muted); font-size: 12px; font-weight: 400; }
+    .metric .cached-total { color: var(--fg); font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .metric .value { font-variant-numeric: tabular-nums; }
     .session-stats { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 8px; margin-top: 9px; }
     .session-stats .stat-label { color: var(--muted); font-size: 11px; }
@@ -1558,8 +1558,8 @@ function getDashboardHtml() {
       return '<div class="metric">' +
         '<div class="label">' + escapeHtml(label) + '</div>' +
         '<div class="primary-line"><div class="value">' + fmt(usage.total_tokens) + '</div>' +
-        '<div class="cached-stat"><div class="cached-label">Cached</div><div class="cached-total">' +
-        fmt(usage.cached_input_tokens) + '</div></div></div>' +
+        '<div class="cached-stat"><span class="cached-label">Cached</span><strong class="cached-total">' +
+        fmt(usage.cached_input_tokens) + '</strong></div></div>' +
         '<div class="detail">' + escapeHtml(money(usage.cost_usd, usage.unpriced_events)) +
         ' · input ' + fmt(usage.input_tokens) + ' / output ' + fmt(usage.output_tokens) + '</div>' +
         '<div class="detail">Cache hit ' + pct(usage.cached_input_tokens, usage.input_tokens) +
